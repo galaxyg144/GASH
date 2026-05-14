@@ -59,7 +59,7 @@
   env                  - List all variables
   unset <name>         - Unset variable
   source <file>        - Execute commands from file
-  Use $VAR or ${VAR} in commands for variable expansion
+  Use $VAR or \${VAR} in commands for variable expansion
   Use $(command) for command substitution`;
 
   const HELP_ENV = `Environment Commands:
