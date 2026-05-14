@@ -679,6 +679,13 @@
       const code = await fetchCode(url);
       ctx.gashPackages[name] = { code, url: resolved, installed: Date.now(), ...meta };
       ctx._savePackages();
+      // Auto-execute package code so it registers commands immediately
+      try {
+        const fn = new Function('GASH', 'ctx', 'args', 'console', 'document', 'window', code);
+        fn(window.GASH, ctx, [], ctx.console || console, document, window);
+      } catch (e) {
+        ctx.addToConsole(`> package execution warning: ${e.message}`, 'error-output');
+      }
       if (meta && meta.description) {
         ctx.addToConsole(`> \ud83d\udce6 ${name} v${meta.version || '?'} by ${meta.author || '?'}`);
       }
