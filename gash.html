@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/x-icon" href="gash.ico">
+<title>GASH - Galaxy's Developer Shell</title>
+<link rel="stylesheet" href="src/gash.css">
+</head>
+
+<body>
+<div id="console-output"></div>
+<div id="prompt">
+  <span id="prompt-label">GASH $ </span>
+  <span id="input-text" class="input-text"></span>
+  <span id="blinking-caret">█</span>
+</div>
+<div id="status-bar"></div>
+
+<script src="src/core/filesystem.js"></script>
+<script src="src/core/commands.js"></script>
+<script src="src/core/editor.js"></script>
+<script src="src/gash.js"></script>
+
+</body>
+
+</html>
