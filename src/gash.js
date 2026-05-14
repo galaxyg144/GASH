@@ -522,180 +522,181 @@
 
   // ─── INPUT FIELD EVENT HANDLING ─────────────────────────────────
 
-  // Real-time input tracking (used by history search)
-  inputField.addEventListener('input', function () {
-    if (G.historySearchMode) {
-      G.historySearchQuery = inputField.value;
-      if (G.historySearchQuery) {
-        G.filteredHistory = G.history.filter(cmd =>
-          cmd.toLowerCase().includes(G.historySearchQuery.toLowerCase())
-        );
-      } else {
-        G.filteredHistory = [];
-      }
-    }
-  });
-
-  document.addEventListener('keydown', async function (event) {
-    const key = event.key;
-
-    // Editor mode: only intercept Enter
-    if (G.editorMode) {
-      if (key === 'Enter') {
-        event.preventDefault();
-        const val = inputField.value;
-        inputField.value = '';
-        const result = G.editor.processCommand(val);
-        if (result) {
-          if (result.saveAndContinue) {
-            await G.editor.save(G.fs);
-            G.addToConsole(`> saved ${G.editor.filename}`);
-            G._updatePrompt();
-          } else if (result.saveAndQuit) {
-            await G.editor.save(G.fs);
-            G.addToConsole(`> saved and closed ${G.editor.filename}`);
-            G.editor.active = false;
-            G.editorMode = false;
-            G._updatePrompt();
-          } else if (!result.stayOpen) {
-            G.editor.active = false;
-            G.editorMode = false;
-            G._updatePrompt();
-          }
-          if (result.output) {
-            G.addToConsole(result.output);
-          }
-        }
-      }
-      return;
-    }
-
-    // History search mode
-    if (G.historySearchMode) {
-      if (key === 'Enter') {
-        event.preventDefault();
-        G.historySearchMode = false;
-        const cmd = G.filteredHistory.length > 0 ? G.filteredHistory[0] : inputField.value;
-        inputField.value = '';
-        G._updatePrompt();
-        if (cmd.trim()) {
-          G.addToConsole(cmd.trim());
-          await G.processCommand(cmd.trim());
-        }
-        return;
-      }
-      if (key === 'Escape') {
-        G.historySearchMode = false;
-        G.historySearchQuery = '';
-        inputField.value = '';
-        G._updatePrompt();
-        return;
-      }
-      return;
-    }
-
-    // Normal mode
-
-    if (key === 'Enter') {
-      event.preventDefault();
-      const val = inputField.value.trim();
-      inputField.value = '';
-      tabSuggestions = [];
-
-      if (G.waitingForFunction) {
-        if (typeof G.waitingForFunction === 'object' && G.waitingForFunction.type === 'wipe') {
-          if (val === G.waitingForFunction.code) {
-            localStorage.clear();
-            G.addToConsole('> Local storage wiped!');
-          } else if (val === 'no') {
-            G.addToConsole('> Wipe cancelled.');
-          } else {
-            G.addToConsole('> Invalid confirmation. Wipe cancelled.');
-          }
-          G.waitingForFunction = null;
-        } else if (val === 'endfunc') {
-          G.addToConsole(`> Function "${G.waitingForFunction}" saved.`);
-          G._saveFunctions();
-          G.waitingForFunction = null;
+  if (!inputField) {
+    console.error('GASH: input field not found');
+  } else {
+    // Real-time input tracking (used by history search)
+    inputField.addEventListener('input', function () {
+      if (G.historySearchMode) {
+        G.historySearchQuery = inputField.value;
+        if (G.historySearchQuery) {
+          G.filteredHistory = G.history.filter(cmd =>
+            cmd.toLowerCase().includes(G.historySearchQuery.toLowerCase())
+          );
         } else {
-          G.gashFunctions[G.waitingForFunction].push(val);
+          G.filteredHistory = [];
         }
-        G._updatePrompt();
+      }
+    });
+
+    inputField.addEventListener('keydown', async function (event) {
+      const key = event.key;
+
+      // Editor mode: only intercept Enter
+      if (G.editorMode) {
+        if (key === 'Enter') {
+          event.preventDefault();
+          const val = inputField.value;
+          inputField.value = '';
+          const result = G.editor.processCommand(val);
+          if (result) {
+            if (result.saveAndContinue) {
+              await G.editor.save(G.fs);
+              G.addToConsole(`> saved ${G.editor.filename}`);
+              G._updatePrompt();
+            } else if (result.saveAndQuit) {
+              await G.editor.save(G.fs);
+              G.addToConsole(`> saved and closed ${G.editor.filename}`);
+              G.editor.active = false;
+              G.editorMode = false;
+              G._updatePrompt();
+            } else if (!result.stayOpen) {
+              G.editor.active = false;
+              G.editorMode = false;
+              G._updatePrompt();
+            }
+            if (result.output) {
+              G.addToConsole(result.output);
+            }
+          }
+        }
         return;
       }
 
-      if (val) {
-        G.addToConsole(val);
-        await G.processCommand(val);
+      // History search mode
+      if (G.historySearchMode) {
+        if (key === 'Enter') {
+          event.preventDefault();
+          G.historySearchMode = false;
+          const cmd = G.filteredHistory.length > 0 ? G.filteredHistory[0] : inputField.value;
+          inputField.value = '';
+          G._updatePrompt();
+          if (cmd.trim()) {
+            G.addToConsole(cmd.trim());
+            G.processCommand(cmd.trim());
+          }
+          return;
+        }
+        if (key === 'Escape') {
+          G.historySearchMode = false;
+          G.historySearchQuery = '';
+          inputField.value = '';
+          G._updatePrompt();
+          return;
+        }
+        return;
       }
-      return;
-    }
 
-    if (key === 'Tab') {
-      event.preventDefault();
-      const words = inputField.value.split(' ');
-      const prefix = words[words.length - 1];
-      const matches = getTabCompletions(prefix);
+      // Normal mode
 
-      if (matches.length === 1) {
-        words[words.length - 1] = matches[0] + ' ';
-        inputField.value = words.join(' ');
-        const len = inputField.value.length;
-        inputField.setSelectionRange(len, len);
-      } else if (matches.length > 1) {
-        tabSuggestions = matches;
-        tabIndex = (tabIndex + 1) % matches.length;
-        G.addToConsole('> ' + matches.join('  '), 'help-output');
-      }
-      return;
-    }
-
-    if (key === 'ArrowUp') {
-      event.preventDefault();
-      if (G.history.length > 0) {
-        if (G.historyIndex > 0) G.historyIndex--;
-        inputField.value = G.history[G.historyIndex] || '';
-        const len = inputField.value.length;
-        inputField.setSelectionRange(len, len);
-      }
-      return;
-    }
-
-    if (key === 'ArrowDown') {
-      event.preventDefault();
-      if (G.historyIndex < G.history.length - 1) {
-        G.historyIndex++;
-        inputField.value = G.history[G.historyIndex] || '';
-      } else {
-        G.historyIndex = G.history.length;
+      if (key === 'Enter') {
+        event.preventDefault();
+        const val = inputField.value.trim();
         inputField.value = '';
+        tabSuggestions = [];
+
+        if (G.waitingForFunction) {
+          if (typeof G.waitingForFunction === 'object' && G.waitingForFunction.type === 'wipe') {
+            if (val === G.waitingForFunction.code) {
+              localStorage.clear();
+              G.addToConsole('> Local storage wiped!');
+            } else if (val === 'no') {
+              G.addToConsole('> Wipe cancelled.');
+            } else {
+              G.addToConsole('> Invalid confirmation. Wipe cancelled.');
+            }
+            G.waitingForFunction = null;
+          } else if (val === 'endfunc') {
+            G.addToConsole(`> Function "${G.waitingForFunction}" saved.`);
+            G._saveFunctions();
+            G.waitingForFunction = null;
+          } else {
+            G.gashFunctions[G.waitingForFunction].push(val);
+          }
+          G._updatePrompt();
+          return;
+        }
+
+        if (val) {
+          G.addToConsole(val);
+          G.processCommand(val);
+        }
+        return;
       }
-      const len = inputField.value.length;
-      inputField.setSelectionRange(len, len);
-      return;
-    }
 
-    if ((key === 'r' || key === 'R') && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      G.historySearchMode = true;
-      G.historySearchQuery = '';
-      G.filteredHistory = [];
-      inputField.value = '';
-      G.addToConsole('> (history search) type to search...');
-      G._updatePrompt();
-      return;
-    }
+      if (key === 'Tab') {
+        event.preventDefault();
+        const words = inputField.value.split(' ');
+        const prefix = words[words.length - 1];
+        const matches = getTabCompletions(prefix);
 
-    // All other keys (arrows, home, end, delete, printable, etc.)
-    // are handled natively by the input field
-  });
+        if (matches.length === 1) {
+          words[words.length - 1] = matches[0] + ' ';
+          inputField.value = words.join(' ');
+          const len = inputField.value.length;
+          inputField.setSelectionRange(len, len);
+        } else if (matches.length > 1) {
+          tabSuggestions = matches;
+          tabIndex = (tabIndex + 1) % matches.length;
+          G.addToConsole('> ' + matches.join('  '), 'help-output');
+        }
+        return;
+      }
 
-  // Keep input focused
-  document.addEventListener('click', function () {
+      if (key === 'ArrowUp') {
+        event.preventDefault();
+        if (G.history.length > 0) {
+          if (G.historyIndex > 0) G.historyIndex--;
+          inputField.value = G.history[G.historyIndex] || '';
+          const len = inputField.value.length;
+          inputField.setSelectionRange(len, len);
+        }
+        return;
+      }
+
+      if (key === 'ArrowDown') {
+        event.preventDefault();
+        if (G.historyIndex < G.history.length - 1) {
+          G.historyIndex++;
+          inputField.value = G.history[G.historyIndex] || '';
+        } else {
+          G.historyIndex = G.history.length;
+          inputField.value = '';
+        }
+        const len = inputField.value.length;
+        inputField.setSelectionRange(len, len);
+        return;
+      }
+
+      if ((key === 'r' || key === 'R') && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        G.historySearchMode = true;
+        G.historySearchQuery = '';
+        G.filteredHistory = [];
+        inputField.value = '';
+        G.addToConsole('> (history search) type to search...');
+        G._updatePrompt();
+        return;
+      }
+    });
+
+    // Keep input focused
+    document.addEventListener('click', function () {
+      inputField.focus();
+    });
+
     inputField.focus();
-  });
-
-  inputField.focus();
+  }
 
   // ─── EDITOR COMMAND ─────────────────────────────────────────────
 
