@@ -1,0 +1,11 @@
+{
+  "packages": [
+    {
+      "name": "math",
+      "author": "galaxyg144",
+      "version": "1.0.0",
+      "description": "Advanced math: trig, factorial, primes, gcd/lcm, rounding, random, and more",
+      "url": "https://raw.githubusercontent.com/galaxyg144/GASH/main/packages/math.js"
+    }
+  ]
+}

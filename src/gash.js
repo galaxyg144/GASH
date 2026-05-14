@@ -419,7 +419,8 @@
 
       // Display output if last in pipeline and no redirect consumed it
       if (si === pipeSegments.length - 1 && pipeOutput != null) {
-        G.addToConsole(`> ${pipeOutput}`);
+        const cls = pipeOutput.startsWith('error:') ? 'error-output' : '';
+        G.addToConsole(`> ${pipeOutput}`, cls);
       }
     }
   };

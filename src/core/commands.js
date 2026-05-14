@@ -70,18 +70,25 @@
   prompt <text>        - Set prompt label`;
 
   const HELP_PKG = `Function & Package Commands:
-  func create <name>      - Create a GASH function
-  func list               - List functions
-  func delete <name>      - Delete a function
-  func run <name>         - Run a function
-  func show <name>        - Show function code
-  func export <name>      - Export function as JSON
+  func create <name>        - Create a GASH function
+  func list                 - List functions
+  func delete <name>        - Delete a function
+  func run <name>           - Run a function
+  func show <name>          - Show function code
+  func export <name>        - Export function as JSON
 
-  pkg install <name> <url> - Install JS package from URL (raw .js or {code:...} JSON)
-  pkg run <name> [args]    - Execute a JavaScript package
-  pkg list                 - List installed packages
-  pkg remove <name>        - Remove a package
-  pkg show <name>          - Show package source code`;
+  pkg install <name>        - Install from registry
+  pkg install <name> <url>  - Install from URL
+  pkg install -u <url>      - Install from URL (name from file)
+  pkg run <name> [args]     - Execute a package
+  pkg list                  - List installed packages
+  pkg remove <name>         - Remove a package
+  pkg show <name>           - Show package source code
+  pkg search <query>        - Search registry
+  pkg info <name>           - Show package details from registry
+  Flags for install:
+    -a/--author <author>    - Filter by author
+    -u/--url <url>          - Install from URL instead of registry`;
 
   const HELP_EDIT = `Editor Commands:
   edit <path> - Open file in line editor
@@ -630,8 +637,10 @@
 
   // ─── PACKAGE MANAGER (vanilla JS packages) ─────────────────────
 
+  const REGISTRY_URL = 'https://raw.githubusercontent.com/galaxyg144/GASH/main/packages/registry.json';
+
   G.register('pkg', async function (args, ctx) {
-    if (!args.length) return '> usage: pkg <install|run|list|remove|show>';
+    if (!args.length) return '> usage: pkg <install|run|list|remove|show|search|info>';
     const sub = args[0];
 
     const disclaimer = function () {
@@ -639,33 +648,175 @@
       ctx.addToConsole('> Your browser sandboxes everything \u2014 you\'ll be fine, but don\'t be dumb.', 'error-output');
     };
 
-    if (sub === 'install') {
-      const name = args[1];
-      const url = args[2];
-      if (!name || !url) return '> error: usage: pkg install <name> <url>';
-      disclaimer();
+    async function fetchRegistry() {
+      const res = await fetch(REGISTRY_URL);
+      if (!res.ok) throw new Error(`registry HTTP ${res.status}`);
+      const data = await res.json();
+      return data.packages || [];
+    }
+
+    function resolveUrl(url) {
+      if (url.startsWith('/')) return window.location.origin + url;
+      if (!url.startsWith('http://') && !url.startsWith('https://')) return window.location.origin + '/' + url;
+      return url;
+    }
+
+    async function fetchCode(url) {
+      const resolved = resolveUrl(url);
+      const res = await fetch(resolved);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
       try {
-        const res = await fetch(url);
-        if (!res.ok) return `> error: HTTP ${res.status}`;
-        const text = await res.text();
-        let code = text;
-        try {
-          const json = JSON.parse(text);
-          if (json.code) code = json.code;
-        } catch (e) { /* raw JS, use as-is */ }
-        ctx.gashPackages[name] = { code, url, installed: Date.now() };
-        ctx._savePackages();
-        return `> installed JS package "${name}" (${code.length} chars from ${url})`;
+        const json = JSON.parse(text);
+        if (json.code) return json.code;
+      } catch (e) { /* raw JS */ }
+      return text;
+    }
+
+    async function installFromUrl(name, url, meta) {
+      const resolved = resolveUrl(url);
+      disclaimer();
+      const code = await fetchCode(url);
+      ctx.gashPackages[name] = { code, url: resolved, installed: Date.now(), ...meta };
+      ctx._savePackages();
+      if (meta && meta.description) {
+        ctx.addToConsole(`> \ud83d\udce6 ${name} v${meta.version || '?'} by ${meta.author || '?'}`);
+      }
+      return `> installed package "${name}" (${code.length} chars)`;
+    }
+
+    // ── INSTALL ──────────────────────────────────────────────────
+
+    if (sub === 'install') {
+      const rest = args.slice(1);
+
+      // Check for -u/--url flag
+      const urlFlagIdx = rest.indexOf('-u') !== -1 ? rest.indexOf('-u') : rest.indexOf('--url');
+      if (urlFlagIdx !== -1) {
+        const url = rest[urlFlagIdx + 1];
+        if (!url) return '> error: -u/--url requires a URL argument';
+        const name = rest[0] !== '-u' && rest[0] !== '--url' ? rest[0] : url.split('/').pop().replace(/\.\w+$/, '');
+        return await installFromUrl(name, url);
+      }
+
+      // Check for -a/--author flag
+      const authorFlagIdx = rest.indexOf('-a') !== -1 ? rest.indexOf('-a') : rest.indexOf('--author');
+      let authorFilter = null;
+      let positionalArgs;
+      if (authorFlagIdx !== -1) {
+        authorFilter = rest[authorFlagIdx + 1];
+        positionalArgs = rest.slice(0, authorFlagIdx);
+      } else {
+        positionalArgs = rest;
+      }
+
+      const name = positionalArgs[0];
+      const url = positionalArgs[1];
+
+      // Direct URL: pkg install <name> <url>
+      if (name && url) {
+        return await installFromUrl(name, url);
+      }
+
+      // Registry lookup: pkg install <name>
+      if (!name) return '> error: usage: pkg install <name> [-a <author>] [-u <url>]';
+      try {
+        const registry = await fetchRegistry();
+        let matches = registry.filter(p => p.name === name);
+
+        if (authorFilter) {
+          matches = matches.filter(p => p.author === authorFilter);
+        }
+
+        if (matches.length === 0) {
+          return `> no package "${name}" found in registry${authorFilter ? ` by "${authorFilter}"` : ''}`;
+        }
+
+        if (matches.length > 1) {
+          let msg = `> multiple packages named "${name}":\n`;
+          matches.forEach((p, i) => {
+            msg += `>   ${i + 1}. ${p.name} v${p.version} by ${p.author} - ${p.description}\n`;
+          });
+          msg += `> use -a <author> to pick one`;
+          return msg.trimEnd();
+        }
+
+        const pkg = matches[0];
+        return await installFromUrl(pkg.name, pkg.url, {
+          author: pkg.author,
+          version: pkg.version,
+          description: pkg.description
+        });
       } catch (err) {
-        return `> error: ${err.message}`;
+        return `> registry error: ${err.message}`;
       }
     }
+
+    // ── SEARCH ───────────────────────────────────────────────────
+
+    if (sub === 'search') {
+      const query = args.slice(1).join(' ').toLowerCase();
+      if (!query) return '> usage: pkg search <query>';
+      try {
+        const registry = await fetchRegistry();
+        const matches = registry.filter(p =>
+          p.name.toLowerCase().includes(query) ||
+          p.description.toLowerCase().includes(query) ||
+          p.author.toLowerCase().includes(query)
+        );
+        if (!matches.length) return '> no matching packages found';
+        let msg = `> ${matches.length} result(s) for "${query}":\n`;
+        matches.forEach(p => {
+          msg += `>   ${p.name} v${p.version} by ${p.author} - ${p.description}\n`;
+        });
+        return msg.trimEnd();
+      } catch (err) {
+        return `> registry error: ${err.message}`;
+      }
+    }
+
+    // ── INFO ─────────────────────────────────────────────────────
+
+    if (sub === 'info') {
+      const name = args[1];
+      if (!name) return '> usage: pkg info <name>';
+
+      const installed = ctx.gashPackages[name];
+      let msg = '';
+      if (installed) {
+        msg += `> \ud83d\udce6 ${name} (installed)\n`;
+        msg += `>   size: ${installed.code.length} chars\n`;
+        msg += `>   from: ${installed.url}\n`;
+        msg += `>   installed: ${new Date(installed.installed).toLocaleString()}\n`;
+        if (installed.author) msg += `>   author: ${installed.author}\n`;
+        if (installed.version) msg += `>   version: ${installed.version}\n`;
+        if (installed.description) msg += `>   description: ${installed.description}\n`;
+      }
+
+      try {
+        const registry = await fetchRegistry();
+        const matches = registry.filter(p => p.name === name);
+        if (matches.length > 0) {
+          if (installed) msg += '>\n';
+          matches.forEach(p => {
+            msg += `> \ud83d\udcc1 ${p.name} v${p.version} by ${p.author}\n`;
+            msg += `>   ${p.description}\n`;
+            msg += `>   ${p.url}\n`;
+          });
+        }
+      } catch (e) { /* registry offline, show installed info only */ }
+
+      if (!msg) return `> no info for "${name}"`;
+      return msg.trimEnd();
+    }
+
+    // ── RUN ──────────────────────────────────────────────────────
 
     if (sub === 'run') {
       const name = args[1];
       if (!name) return '> error: usage: pkg run <name> [args]';
       const pkg = ctx.gashPackages[name];
-      if (!pkg) return `> package "${name}" not found`;
+      if (!pkg) return `> package "${name}" not found (try "pkg install ${name}" first)`;
       disclaimer();
       try {
         const fn = new Function('GASH', 'ctx', 'args', 'console', 'document', 'window', pkg.code);
@@ -680,15 +831,20 @@
       }
     }
 
+    // ── LIST ─────────────────────────────────────────────────────
+
     if (sub === 'list') {
       const names = Object.keys(ctx.gashPackages);
       if (!names.length) return '> no packages installed';
       const lines = names.map(n => {
         const p = ctx.gashPackages[n];
-        return `${n} (${p.code.length} chars, from ${p.url})`;
+        const tag = p.author ? ` by ${p.author}` : '';
+        return `${n}${tag} (${p.code.length} chars)`;
       });
       return '> ' + lines.join('\n> ');
     }
+
+    // ── REMOVE ───────────────────────────────────────────────────
 
     if (sub === 'remove') {
       const name = args[1];
@@ -701,6 +857,8 @@
       return `> package "${name}" not found`;
     }
 
+    // ── SHOW ─────────────────────────────────────────────────────
+
     if (sub === 'show') {
       const name = args[1];
       if (!name) return '> error: usage: pkg show <name>';
@@ -709,7 +867,7 @@
       return '> ' + pkg.code.split('\n').join('\n> ');
     }
 
-    return '> usage: pkg <install|run|list|remove|show>';
+    return '> usage: pkg <install|run|list|remove|show|search|info>';
   }, HELP_PKG, 'pkg');
 
   // ─── UTILITIES ───────────────────────────────────────────────────
