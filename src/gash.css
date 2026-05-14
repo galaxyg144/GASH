@@ -35,27 +35,32 @@ body {
   width: 100%;
   color: #00ff00;
   font-size: 18px;
+  gap: 0;
 }
 
 #prompt-label {
   color: #00ff00;
   white-space: pre;
+  flex-shrink: 0;
 }
 
-.input-text {
+#input-field {
+  background: transparent;
+  border: none;
+  outline: none;
   color: white;
   font-family: 'Courier New', monospace;
-  white-space: pre;
+  font-size: 18px;
+  caret-color: #00ff00;
+  flex: 1;
+  padding: 0;
+  margin: 0;
+  line-height: 1.6;
 }
 
-#blinking-caret {
-  color: #00ff00;
-  animation: blink 1s step-end infinite;
-  font-weight: bold;
-}
-
-@keyframes blink {
-  50% { opacity: 0; }
+#input-field::selection {
+  background-color: #00ff00;
+  color: black;
 }
 
 .prompt-gash {
@@ -84,6 +89,10 @@ body {
   opacity: 75%;
 }
 
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
 .theme-default {
   background-color: black;
   color: #00FF00;
@@ -95,9 +104,13 @@ body {
 }
 
 .theme-light #prompt-label,
-.theme-light #blinking-caret,
-.theme-light .prompt-gash {
+.theme-light .prompt-gash,
+.theme-light #input-field {
   color: #006600;
+}
+
+.theme-light #input-field {
+  caret-color: #006600;
 }
 
 .theme-blue {
@@ -106,9 +119,13 @@ body {
 }
 
 .theme-blue #prompt-label,
-.theme-blue #blinking-caret,
-.theme-blue .prompt-gash {
+.theme-blue .prompt-gash,
+.theme-blue #input-field {
   color: #1E90FF;
+}
+
+.theme-blue #input-field {
+  caret-color: #1E90FF;
 }
 
 .theme-red {
@@ -117,9 +134,13 @@ body {
 }
 
 .theme-red #prompt-label,
-.theme-red #blinking-caret,
-.theme-red .prompt-gash {
+.theme-red .prompt-gash,
+.theme-red #input-field {
   color: #FF4500;
+}
+
+.theme-red #input-field {
+  caret-color: #FF4500;
 }
 
 .theme-purple {
@@ -128,9 +149,13 @@ body {
 }
 
 .theme-purple #prompt-label,
-.theme-purple #blinking-caret,
-.theme-purple .prompt-gash {
+.theme-purple .prompt-gash,
+.theme-purple #input-field {
   color: #800080;
+}
+
+.theme-purple #input-field {
+  caret-color: #800080;
 }
 
 .theme-green {

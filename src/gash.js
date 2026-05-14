@@ -17,7 +17,6 @@
   G.config = { theme: 'default', prompt: 'GASH' };
   G.history = [];
   G.historyIndex = -1;
-  G.currentInput = '';
   G.socket = null;
   G.waitingForFunction = null;
   G.gashFunctions = {};
@@ -29,10 +28,9 @@
 
   // ─── DOM REFS ───────────────────────────────────────────────────
 
-  const inputText = document.getElementById('input-text');
+  const inputField = document.getElementById('input-field');
   const consoleOutput = document.getElementById('console-output');
   const promptLabel = document.getElementById('prompt-label');
-  const blinkingCaret = document.getElementById('blinking-caret');
 
   // ─── HELPERS ────────────────────────────────────────────────────
 
@@ -49,15 +47,20 @@
   };
 
   G._updatePrompt = function () {
-    if (promptLabel) {
-      let label = G.config.prompt || 'GASH';
-      if (G.editorMode) {
-        promptLabel.textContent = `EDIT:${G.editor.filename}> `;
-      } else if (G.waitingForFunction) {
-        promptLabel.textContent = `func> `;
-      } else {
-        promptLabel.textContent = `${label} $ `;
-      }
+    if (!promptLabel) return;
+    if (G.editorMode) {
+      promptLabel.textContent = `EDIT:${G.editor.filename}> `;
+    } else if (G.waitingForFunction) {
+      promptLabel.textContent = `func> `;
+    } else if (G.historySearchMode) {
+      promptLabel.textContent = `(search) `;
+    } else {
+      const cwd = G.vars.PWD || '/';
+      const shortCwd = cwd === '/' ? '/' : cwd.split('/').pop();
+      promptLabel.textContent = `${G.config.prompt || 'GASH'} ${shortCwd} $ `;
+    }
+    if (inputField && document.activeElement !== inputField) {
+      inputField.focus();
     }
   };
 
@@ -509,23 +512,40 @@
   }
 
   function completeWith(completion, originalPrefix) {
-    const words = G.currentInput.split(' ');
+    const words = inputField.value.split(' ');
     words[words.length - 1] = completion + ' ';
-    G.currentInput = words.join(' ');
-    inputText.textContent = G.currentInput;
+    inputField.value = words.join(' ');
+    const len = inputField.value.length;
+    inputField.setSelectionRange(len, len);
     tabSuggestions = [];
   }
 
-  // ─── KEYBOARD HANDLING ──────────────────────────────────────────
+  // ─── INPUT FIELD EVENT HANDLING ─────────────────────────────────
+
+  // Real-time input tracking (used by history search)
+  inputField.addEventListener('input', function () {
+    if (G.historySearchMode) {
+      G.historySearchQuery = inputField.value;
+      if (G.historySearchQuery) {
+        G.filteredHistory = G.history.filter(cmd =>
+          cmd.toLowerCase().includes(G.historySearchQuery.toLowerCase())
+        );
+      } else {
+        G.filteredHistory = [];
+      }
+    }
+  });
 
   document.addEventListener('keydown', async function (event) {
     const key = event.key;
 
-    // Editor mode
+    // Editor mode: only intercept Enter
     if (G.editorMode) {
       if (key === 'Enter') {
         event.preventDefault();
-        const result = G.editor.processCommand(G.currentInput);
+        const val = inputField.value;
+        inputField.value = '';
+        const result = G.editor.processCommand(val);
         if (result) {
           if (result.saveAndContinue) {
             await G.editor.save(G.fs);
@@ -546,137 +566,136 @@
             G.addToConsole(result.output);
           }
         }
-        G.currentInput = '';
-        inputText.textContent = '';
-      } else if (key === 'Backspace') {
-        G.currentInput = G.currentInput.slice(0, -1);
-        inputText.textContent = G.currentInput;
-      } else if (key.length === 1) {
-        G.currentInput += key;
-        inputText.textContent = G.currentInput;
       }
       return;
     }
 
-    // History search mode (Ctrl+R)
+    // History search mode
     if (G.historySearchMode) {
       if (key === 'Enter') {
         event.preventDefault();
         G.historySearchMode = false;
-        if (G.filteredHistory.length > 0) {
-          const cmd = G.filteredHistory[0];
-          G.currentInput = cmd;
-          inputText.textContent = cmd;
-        }
+        const cmd = G.filteredHistory.length > 0 ? G.filteredHistory[0] : inputField.value;
+        inputField.value = '';
         G._updatePrompt();
+        if (cmd.trim()) {
+          G.addToConsole(cmd.trim());
+          await G.processCommand(cmd.trim());
+        }
         return;
       }
-      if (key === 'Backspace') {
-        G.historySearchQuery = G.historySearchQuery.slice(0, -1);
-      } else if (key.length === 1) {
-        G.historySearchQuery += key;
-      } else if (key === 'Escape') {
+      if (key === 'Escape') {
         G.historySearchMode = false;
         G.historySearchQuery = '';
+        inputField.value = '';
         G._updatePrompt();
         return;
-      }
-      if (G.historySearchQuery) {
-        G.filteredHistory = G.history.filter(cmd =>
-          cmd.toLowerCase().includes(G.historySearchQuery.toLowerCase())
-        );
-      } else {
-        G.filteredHistory = [];
-      }
-      if (G.filteredHistory.length > 0) {
-        G.currentInput = G.filteredHistory[0];
-        inputText.textContent = G.currentInput;
-      } else {
-        inputText.textContent = '';
       }
       return;
     }
 
     // Normal mode
-    if (key === 'Backspace') {
-      G.currentInput = G.currentInput.slice(0, -1);
-    } else if (key === 'Enter') {
+
+    if (key === 'Enter') {
       event.preventDefault();
-      const input = G.currentInput.trim();
-      G.currentInput = '';
-      inputText.textContent = '';
+      const val = inputField.value.trim();
+      inputField.value = '';
       tabSuggestions = [];
 
       if (G.waitingForFunction) {
         if (typeof G.waitingForFunction === 'object' && G.waitingForFunction.type === 'wipe') {
-          if (input === G.waitingForFunction.code) {
+          if (val === G.waitingForFunction.code) {
             localStorage.clear();
             G.addToConsole('> Local storage wiped!');
-          } else if (input === 'no') {
+          } else if (val === 'no') {
             G.addToConsole('> Wipe cancelled.');
           } else {
             G.addToConsole('> Invalid confirmation. Wipe cancelled.');
           }
           G.waitingForFunction = null;
-        } else if (input === 'endfunc') {
+        } else if (val === 'endfunc') {
           G.addToConsole(`> Function "${G.waitingForFunction}" saved.`);
           G._saveFunctions();
           G.waitingForFunction = null;
         } else {
-          G.gashFunctions[G.waitingForFunction].push(input.trim());
+          G.gashFunctions[G.waitingForFunction].push(val);
         }
         G._updatePrompt();
         return;
       }
 
-      if (input) {
-        G.addToConsole(input);
-        await G.processCommand(input);
+      if (val) {
+        G.addToConsole(val);
+        await G.processCommand(val);
       }
       return;
-    } else if (key === 'Tab') {
+    }
+
+    if (key === 'Tab') {
       event.preventDefault();
-      const words = G.currentInput.split(' ');
+      const words = inputField.value.split(' ');
       const prefix = words[words.length - 1];
       const matches = getTabCompletions(prefix);
 
       if (matches.length === 1) {
         words[words.length - 1] = matches[0] + ' ';
-        G.currentInput = words.join(' ');
+        inputField.value = words.join(' ');
+        const len = inputField.value.length;
+        inputField.setSelectionRange(len, len);
       } else if (matches.length > 1) {
         tabSuggestions = matches;
         tabIndex = (tabIndex + 1) % matches.length;
         G.addToConsole('> ' + matches.join('  '), 'help-output');
       }
-    } else if (key === 'ArrowUp') {
+      return;
+    }
+
+    if (key === 'ArrowUp') {
       event.preventDefault();
       if (G.history.length > 0) {
         if (G.historyIndex > 0) G.historyIndex--;
-        G.currentInput = G.history[G.historyIndex] || '';
+        inputField.value = G.history[G.historyIndex] || '';
+        const len = inputField.value.length;
+        inputField.setSelectionRange(len, len);
       }
-    } else if (key === 'ArrowDown') {
+      return;
+    }
+
+    if (key === 'ArrowDown') {
       event.preventDefault();
       if (G.historyIndex < G.history.length - 1) {
         G.historyIndex++;
-        G.currentInput = G.history[G.historyIndex] || '';
+        inputField.value = G.history[G.historyIndex] || '';
       } else {
         G.historyIndex = G.history.length;
-        G.currentInput = '';
+        inputField.value = '';
       }
-    } else if (key === 'r' && (event.ctrlKey || event.metaKey)) {
+      const len = inputField.value.length;
+      inputField.setSelectionRange(len, len);
+      return;
+    }
+
+    if ((key === 'r' || key === 'R') && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       G.historySearchMode = true;
       G.historySearchQuery = '';
       G.filteredHistory = [];
+      inputField.value = '';
       G.addToConsole('> (history search) type to search...');
       G._updatePrompt();
       return;
-    } else if (key.length === 1 || key === ' ') {
-      G.currentInput += key;
     }
 
-    inputText.textContent = G.currentInput;
+    // All other keys (arrows, home, end, delete, printable, etc.)
+    // are handled natively by the input field
   });
+
+  // Keep input focused
+  document.addEventListener('click', function () {
+    inputField.focus();
+  });
+
+  inputField.focus();
 
   // ─── EDITOR COMMAND ─────────────────────────────────────────────
 
