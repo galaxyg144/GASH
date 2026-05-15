@@ -32,6 +32,44 @@
     }
   }
 
+  function hasAwait(code) {
+    // Simple check for top-level await (outside function def)
+    var inFn = false;
+    for (var ci = 0; ci < code.length; ci++) {
+      var ch = code[ci];
+      if (ch === 'd' && code.slice(ci, ci + 8) === 'def ') inFn = true;
+      if (ch === 'a' && code.slice(ci, ci + 5) === 'async') inFn = true;
+      if (ch === '\n') inFn = false;
+    }
+    return !inFn && /\bawait\b/.test(code);
+  }
+
+  async function runPyAsync(code) {
+    pyodide.globals.set('__gash_code', code);
+    var wrapper = [
+      'import sys, io',
+      '__gash_buf = io.StringIO()',
+      '__gash_old = sys.stdout',
+      'sys.stdout = __gash_buf',
+      'try:',
+      '    exec(compile(__gash_code, "<gash>", "single"))',
+      'except Exception as __gash_e:',
+      '    __gash_buf.write(str(__gash_e))',
+      'finally:',
+      '    sys.stdout = __gash_old',
+      '__gash_buf.getvalue()'
+    ].join('\n');
+    try {
+      var result = await pyodide.runPythonAsync(wrapper);
+      var str = String(result);
+      pyodide.runPython('del __gash_code');
+      return str;
+    } catch (e) {
+      pyodide.runPython('del __gash_code');
+      return e.message;
+    }
+  }
+
   function ensurePyodide(ctx) {
     if (pyodide) return Promise.resolve(pyodide);
     if (pyLoadPromise) return pyLoadPromise;
@@ -46,6 +84,8 @@
             indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.25.0/full/'
           });
           ctx.addToConsole('> \ud83d\udfe2 Pyodide loaded! Python ' + pyodide.version);
+          // Pre-load micropip so pip install works
+          try { await pyodide.loadPackage(['micropip']); } catch (e) { /* non-fatal */ }
           resolve(pyodide);
         } catch (e) {
           reject(e);
@@ -94,7 +134,7 @@
         return '> error: ' + e.message;
       }
 
-      G.inputHook = function (line) {
+      G.inputHook = async function (line) {
         if (line === 'exit()' || line === 'quit()' || line === 'exit' || line === 'quit') {
           G.addToConsole('> leaving Python REPL');
           G.inputHook = null;
@@ -105,7 +145,7 @@
           G._updatePrompt();
           return;
         }
-        var output = runPy(line);
+        var output = hasAwait(line) ? await runPyAsync(line) : runPy(line);
         if (output) {
           G.addToConsole('> ' + output.replace(/\n$/, '').split('\n').join('\n> '));
         }
@@ -158,7 +198,7 @@
 
     if (!code) return '> error: no code provided';
 
-    var output = runPy(code);
+    var output = hasAwait(code) ? await runPyAsync(code) : runPy(code);
     if (output) {
       return '> ' + output.replace(/\n$/, '').split('\n').join('\n> ');
     }
@@ -200,9 +240,12 @@
       if (!pkgName) return '> error: usage: pip install <package>';
       ctx.addToConsole('> Installing ' + pkgName + '...');
       try {
-        await pyodide.runPythonAsync('import micropip; await micropip.install("' + pkgName.replace(/"/g, '') + '")');
+        pyodide.globals.set('__gash_pkg', pkgName);
+        await pyodide.runPythonAsync('import micropip; await micropip.install(__gash_pkg)');
+        pyodide.runPython('del __gash_pkg');
         return '> \u2705 Installed "' + pkgName + '"';
       } catch (e) {
+        pyodide.runPython('del __gash_pkg');
         return '> error: ' + e.message;
       }
     }
