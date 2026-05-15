@@ -50,6 +50,8 @@
     if (!promptLabel) return;
     if (G.editorMode) {
       promptLabel.textContent = `EDIT:${G.editor.filename}> `;
+    } else if (G.inputHook) {
+      promptLabel.textContent = `>>> `;
     } else if (G.waitingForFunction) {
       promptLabel.textContent = `func> `;
     } else if (G.historySearchMode) {
@@ -569,6 +571,23 @@
               G.addToConsole(result.output);
             }
           }
+        }
+        return;
+      }
+
+      // Package input hook (e.g., Python REPL)
+      if (G.inputHook) {
+        if (key === 'Enter') {
+          event.preventDefault();
+          const val = inputField.value.trim();
+          inputField.value = '';
+          tabSuggestions = [];
+          if (val) G.inputHook(val);
+        }
+        if (key === 'Escape') {
+          event.preventDefault();
+          inputField.value = '';
+          G.addToConsole('> Type exit() to quit current mode');
         }
         return;
       }
