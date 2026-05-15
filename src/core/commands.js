@@ -122,7 +122,14 @@
   which <cmd>         - Locate a command
   type <cmd>          - Show command type
   app run <name>      - Run an app from src/apps/
-  localstr <op>       - Local storage operations`;
+  localstr <op>       - Local storage operations
+
+System Commands:
+  sudo <cmd>          - Run command as root (prompts for password)
+  whoami              - Show current username
+  id                  - Show user identity
+  hostname [name]     - Show or set hostname
+  passwd              - Change account password`;
 
   // ─── FILE SYSTEM COMMANDS ────────────────────────────────────────
 
@@ -679,6 +686,11 @@
       const code = await fetchCode(url);
       ctx.gashPackages[name] = { code, url: resolved, installed: Date.now(), ...meta };
       ctx._savePackages();
+      // Persist to /sys/bin/ in VFS
+      try {
+        await ctx.fs.mkdirp('/sys/bin');
+        await ctx.fs.writeFile('/sys/bin/' + name + '.js', code);
+      } catch (e) { /* VFS not available */ }
       // Auto-execute package code so it registers commands immediately
       try {
         const fn = new Function('GASH', 'ctx', 'args', 'console', 'document', 'window', code);
@@ -859,6 +871,7 @@
       if (ctx.gashPackages[name]) {
         delete ctx.gashPackages[name];
         ctx._savePackages();
+        try { await ctx.fs.delete('/sys/bin/' + name + '.js'); } catch (e) { /* ignore */ }
         return `> removed package "${name}"`;
       }
       return `> package "${name}" not found`;
@@ -1003,6 +1016,67 @@
     for (let i = 1; i <= n; i++) nums.push(i);
     return '> ' + nums.join('\n> ');
   }, HELP_UTIL, 'util');
+
+  // ─── SYSTEM COMMANDS (gVFS) ─────────────────────────────────────
+
+  G.register('sudo', async function (args, ctx) {
+    if (!args.length) return '> error: usage: sudo <command>';
+    var rootHash = localStorage.getItem('gashRootHash');
+    if (!rootHash) return '> error: root password not set (re-run setup)';
+    var pass = prompt('[sudo] password for root:');
+    if (btoa(pass) !== rootHash) return '> error: incorrect root password';
+    ctx.addToConsole('> \u269b running as root');
+    await ctx.processCommand(args.join(' '));
+    return null;
+  }, `System Commands:
+  sudo <cmd>     - Run command as root (prompts for password)
+  whoami         - Show current username
+  id             - Show user identity
+  hostname [n]   - Show or set hostname
+  passwd         - Change account password`, 'sys');
+
+  G.register('whoami', async function (args, ctx) {
+    return '> ' + (ctx.vars.USER || 'gashuser');
+  }, 'Show current username', 'sys');
+
+  G.register('id', async function (args, ctx) {
+    var user = ctx.vars.USER || 'gashuser';
+    var home = ctx.vars.HOME || '/home/' + user;
+    return '> uid=1000(' + user + ') gid=1000(' + user + ') groups=1000(' + user + ')';
+  }, 'Show user identity', 'sys');
+
+  G.register('hostname', async function (args, ctx) {
+    if (args.length) {
+      ctx.hostname = args[0];
+      try { await ctx.fs.writeFile('/etc/hostname', args[0]); } catch (e) { /* ignore */ }
+      ctx._updatePrompt();
+      return '> hostname set to ' + args[0];
+    }
+    var h = ctx.hostname || 'gashbox';
+    return '> ' + h;
+  }, 'Show or set hostname', 'sys');
+
+  G.register('passwd', async function (args, ctx) {
+    var currentHash = localStorage.getItem('gashRootHash');
+    if (!currentHash) return '> error: root password not set';
+    var old = prompt('Current password:');
+    if (btoa(old) !== currentHash) return '> error: incorrect password';
+    var new1 = prompt('New password:');
+    var new2 = prompt('Retype new password:');
+    if (new1 !== new2) return '> error: passwords do not match';
+    localStorage.setItem('gashRootHash', btoa(new1));
+    // Update /etc/shadow
+    try {
+      var shadow = await ctx.fs.readFile('/etc/shadow');
+      var lines = shadow.split('\n');
+      var rootLine = lines.findIndex(function (l) { return l.startsWith('root:'); });
+      if (rootLine !== -1) {
+        lines[rootLine] = 'root:' + btoa(new1) + ':19000:0:99999:7:::';
+        await ctx.fs.writeFile('/etc/shadow', lines.join('\n'));
+      }
+    } catch (e) { /* ignore */ }
+    return '> password updated';
+  }, 'Change account password', 'sys');
 
   G.register('which', async function (args, ctx) {
     if (!args.length) return '> error: usage: which <command>';

@@ -317,6 +317,42 @@
       }
       return results;
     }
+
+    // ─── gVFS: Linux filesystem layout ────────────────────────────
+
+    async populateDefaultStructure(username, rootPass) {
+      var dirs = [
+        '/bin', '/dev', '/etc', '/home',
+        '/mnt', '/proc', '/root', '/sys',
+        '/sys/bin', '/tmp', '/usr',
+        '/usr/local', '/usr/local/bin', '/var',
+        '/var/log', '/var/tmp'
+      ];
+      for (var i = 0; i < dirs.length; i++) {
+        await this.mkdirp(dirs[i]);
+      }
+
+      var userDirs = ['Documents', 'Downloads', 'Desktop', '.local'];
+      for (var j = 0; j < userDirs.length; j++) {
+        await this.mkdirp('/home/' + username + '/' + userDirs[j]);
+      }
+
+      var hash = btoa(rootPass);
+      var passwdContent = [
+        'root:x:0:0:root:/root:/bin/bash',
+        username + ':x:1000:1000:' + username + ':/home/' + username + ':/bin/bash'
+      ].join('\n');
+      var shadowContent = [
+        'root:' + hash + ':19000:0:99999:7:::',
+        username + ':!:19000:0:99999:7:::'
+      ].join('\n');
+
+      await this.writeFile('/etc/hostname', 'gashbox');
+      await this.writeFile('/etc/passwd', passwdContent);
+      await this.writeFile('/etc/shadow', shadowContent);
+      await this.writeFile('/etc/issue', 'GASH Linux \\n \\l');
+      await this.writeFile('/etc/group', 'root:x:0:\nusers:x:100:\n');
+    }
   }
 
   window.GASH = window.GASH || {};

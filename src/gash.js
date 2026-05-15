@@ -58,8 +58,11 @@
       promptLabel.textContent = `(search) `;
     } else {
       const cwd = G.vars.PWD || '/';
-      const shortCwd = cwd === '/' ? '/' : cwd.split('/').pop();
-      promptLabel.textContent = `${G.config.prompt || 'GASH'} ${shortCwd} $ `;
+      const user = G.vars.USER || 'gashuser';
+      const host = G.hostname || 'gashbox';
+      const home = G.vars.HOME || '/home/' + user;
+      const display = cwd === home ? '~' : cwd;
+      promptLabel.textContent = `${user}@${host}:${display}$ `;
     }
     if (inputField && document.activeElement !== inputField) {
       inputField.focus();
@@ -743,10 +746,60 @@
       console.error('VFS init error:', err);
     }
 
+    // ─── gVFS setup: prompt for user & build Linux layout ──────────
+    var needsSetup = false;
+    try { needsSetup = !(await G.fs.exists('/etc/passwd')); }
+    catch (e) { needsSetup = true; }
+
+    if (needsSetup) {
+      var username = prompt('Enter username:', 'gashuser') || 'gashuser';
+      var rootPass = prompt('Set root password:', 'root') || 'root';
+      await G.fs.populateDefaultStructure(username, rootPass);
+      localStorage.setItem('gashUser', username);
+      localStorage.setItem('gashRootHash', btoa(rootPass));
+      G.vars.USER = username;
+      G.vars.HOME = '/home/' + username;
+      G.fs.cwd = '/home/' + username;
+      G.vars.PWD = '/home/' + username;
+      G.hostname = 'gashbox';
+    } else {
+      var savedUser = localStorage.getItem('gashUser') || 'gashuser';
+      G.vars.USER = savedUser;
+      G.vars.HOME = '/home/' + savedUser;
+      G.hostname = 'gashbox';
+    }
+
+    // ─── Load packages from /sys/bin/ ─────────────────────────────
+    try {
+      var sysEntries = await G.fs.readdir('/sys/bin');
+      for (var si = 0; si < sysEntries.length; si++) {
+        var e = sysEntries[si];
+        if (e.type === 'file' && e.name.endsWith('.js')) {
+          var pkgName = e.name.slice(0, -3);
+          if (!G.gashPackages[pkgName]) {
+            var code = await G.fs.readFile('/sys/bin/' + e.name);
+            G.gashPackages[pkgName] = { code: code, url: '/sys/bin/' + e.name, installed: Date.now() };
+          }
+        }
+      }
+    } catch (e) { /* /sys/bin not ready yet */ }
+
+    // ─── Re-execute all package code to register commands ─────────
+    var pkgCount = 0;
+    for (var pn in G.gashPackages) {
+      try {
+        (new Function('GASH', 'ctx', 'args', 'console', 'document', 'window', G.gashPackages[pn].code))(window.GASH, {}, [], console, document, window);
+        pkgCount++;
+      } catch (e) {
+        console.error('Package re-execution failed:', pn, e);
+      }
+    }
+
     G._clearConsole();
     G._updatePrompt();
 
     G.addToConsole('> \ud83d\udfe2 GASH v' + G.version + ' loaded. Virtual filesystem ready.');
+    if (pkgCount > 0) G.addToConsole('> \ud83d\udce6 ' + pkgCount + ' package(s) loaded.');
     G.addToConsole('> Type "help" to get started.');
   };
 
