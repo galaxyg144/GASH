@@ -42,16 +42,22 @@
   uniq               - Unique lines (piped input)
   grep <pattern> [path] - Search for pattern`;
 
-  const HELP_NET = `Networking Commands:
-  int get <url>                   - HTTP GET request
+const HELP_NET = `Networking Commands:
+  int get <url> [-o <path>]       - HTTP GET request (use -o to save to file)
   int post <url> <data>           - HTTP POST request
   int put <url> <data>            - HTTP PUT request
   int delete <url>                - HTTP DELETE request
+  int file <url> <path>           - Download URL to file
   int headers <key>: <value>      - Set request header
   int headers clear               - Clear all headers
   int ws connect <url>            - Connect to WebSocket
-  int ws send <message>           - Send WebSocket message
-  int ws disconnect               - Close WebSocket`;
+  int ws send <message>           - WebSocket send message
+  int ws disconnect               - Close WebSocket
+
+  ip [public]                     - Show network info & public IP
+  ping <url>                      - Measure round-trip time
+  dig <domain> [type]             - DNS lookup (A, AAAA, MX, TXT, etc.)
+  netstat                         - Show network connections & status`;
 
   const HELP_SCRIPT = `Scripting & Variables:
   set <name>=<value>   - Set shell variable
@@ -176,6 +182,7 @@ System Commands:
       if (!isDir) return `> error: not a directory: ${normalized}`;
       ctx.fs.cwd = normalized;
       ctx.vars.PWD = normalized;
+      ctx._updatePrompt();
       return null;
     } catch (err) {
       return `> error: ${err.message}`;
@@ -393,7 +400,7 @@ System Commands:
   // ─── NETWORKING ─────────────────────────────────────────────────
 
   G.register('int', async function (args, ctx) {
-    if (!args.length) return '> error: usage: int <get|post|put|delete|headers|ws>';
+    if (!args.length) return '> error: usage: int <get|post|put|delete|file|headers|ws>';
 
     const sub = args[0];
 
@@ -413,6 +420,24 @@ System Commands:
       headers[key] = val;
       ctx.vars._intHeaders = JSON.stringify(headers);
       return `> header set: ${key}: ${val}`;
+    }
+
+    if (sub === 'file') {
+      const url = args[1];
+      const filePath = args[2];
+      if (!url || !filePath) return '> error: usage: int file <url> <path>';
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        return '> error: URL must start with http:// or https://';
+      }
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return `> error: HTTP ${res.status} ${res.statusText}`;
+        const text = await res.text();
+        await ctx.fs.writeFile(filePath, text);
+        return `> downloaded ${text.length} bytes from ${url} to ${ctx.fs.normalizePath(filePath)}`;
+      } catch (err) {
+        return `> error: ${err.message}`;
+      }
     }
 
     if (sub === 'ws') {
@@ -450,9 +475,16 @@ System Commands:
     // HTTP methods
     const method = sub.toUpperCase();
     const url = args[1];
-    if (!url) return `> error: usage: int ${sub} <url> [data]`;
+    if (!url) return `> error: usage: int ${sub} <url> [data] [-o <path>]`;
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
       return '> error: URL must start with http:// or https://';
+    }
+
+    let outputPath = null;
+    const flagIdx = args.indexOf('-o');
+    if (flagIdx !== -1 && flagIdx + 1 < args.length) {
+      outputPath = args[flagIdx + 1];
+      args.splice(flagIdx, 2);
     }
 
     const data = args.slice(2).join(' ');
@@ -472,6 +504,12 @@ System Commands:
 
       const res = await fetch(url, fetchOpts);
       const text = await res.text();
+
+      if (outputPath) {
+        await ctx.fs.writeFile(outputPath, text);
+        return `> saved ${text.length} bytes from ${url} to ${ctx.fs.normalizePath(outputPath)} (${res.status} ${res.statusText})`;
+      }
+
       let preview = text.slice(0, 500);
       try {
         preview = JSON.stringify(JSON.parse(text), null, 2);
@@ -482,6 +520,98 @@ System Commands:
       return `> error: ${err.message}`;
     }
   }, HELP_NET, 'net');
+
+  // ─── IP ────────────────────────────────────────────────────────────
+
+  G.register('ip', async function (args, ctx) {
+    if (args[0] === 'public') {
+      try {
+        var res = await fetch('https://api.ipify.org?format=json');
+        var data = await res.json();
+        return '> Public IP: ' + data.ip;
+      } catch (e) {
+        return '> error: ' + e.message;
+      }
+    }
+    var out = '';
+    try {
+      var res = await fetch('https://api.ipify.org?format=json');
+      var data = await res.json();
+      out += '> Public IP: ' + data.ip + '\n';
+    } catch (e) {
+      out += '> Public IP: unavailable\n';
+    }
+    var conn = navigator.connection;
+    if (conn) {
+      out += '> Connection: ' + conn.effectiveType + '\n';
+      out += '> Downlink: ' + conn.downlink + ' Mbps\n';
+      out += '> RTT: ' + conn.rtt + ' ms\n';
+    }
+    out += '> Host: ' + (ctx.hostname || 'gashbox') + '\n';
+    out += '> UA: ' + navigator.userAgent;
+    return out.trimEnd();
+  }, 'Show network info\n  ip                    - Show all network info\n  ip public             - Show public IP only', 'net');
+
+  // ─── PING ──────────────────────────────────────────────────────────
+
+  G.register('ping', async function (args) {
+    if (!args.length) return '> error: usage: ping <url>';
+    var target = args[0];
+    if (!target.startsWith('http://') && !target.startsWith('https://')) {
+      target = 'https://' + target;
+    }
+    var start = performance.now();
+    try {
+      var res = await fetch(target, { method: 'HEAD' });
+      var ms = performance.now() - start;
+      return '> PING ' + target + ' - ' + ms.toFixed(1) + ' ms (status: ' + res.status + ' ' + res.statusText + ')';
+    } catch (e) {
+      var ms = performance.now() - start;
+      return '> PING ' + target + ' - unreachable (' + ms.toFixed(1) + ' ms)';
+    }
+  }, 'Ping a host\n  ping <url>    Measure round-trip time via HEAD request', 'net');
+
+  // ─── DIG ──────────────────────────────────────────────────────────
+
+  G.register('dig', async function (args) {
+    if (!args.length) return '> error: usage: dig <domain> [type]';
+    var domain = args[0];
+    var type = (args[1] || 'A').toUpperCase();
+    var url = 'https://cloudflare-dns.com/dns-query?name=' + encodeURIComponent(domain) + '&type=' + type;
+    try {
+      var res = await fetch(url, { headers: { Accept: 'application/dns-json' } });
+      if (!res.ok) return '> error: DNS query failed (HTTP ' + res.status + ')';
+      var data = await res.json();
+      if (!data.Answer || !data.Answer.length) {
+        return '> no ' + type + ' records found for ' + domain;
+      }
+      var out = '> ' + domain + ' (' + type + '):\n';
+      for (var i = 0; i < data.Answer.length; i++) {
+        var a = data.Answer[i];
+        out += '>   ' + a.name + '  ' + a.ttl + 's  ' + a.type + '  ' + a.data + '\n';
+      }
+      return out.trimEnd();
+    } catch (e) {
+      return '> error: ' + e.message;
+    }
+  }, 'DNS lookup via Cloudflare DoH\n  dig <domain> [type]    Look up DNS records (A, AAAA, MX, TXT, etc.)', 'net');
+
+  // ─── NETSTAT ───────────────────────────────────────────────────────
+
+  G.register('netstat', async function (args, ctx) {
+    var out = '';
+    var conn = navigator.connection;
+    if (conn) {
+      out += '> Connection: ' + conn.effectiveType + '\n';
+      out += '> Downlink: ' + conn.downlink + ' Mbps\n';
+      out += '> RTT: ' + conn.rtt + ' ms\n';
+    } else {
+      out += '> Connection API: not available\n';
+    }
+    out += '> WebSocket: ' + (ctx.socket ? 'connected' : 'none') + '\n';
+    out += '> UA: ' + navigator.userAgent;
+    return out;
+  }, 'Show network connections and status', 'net');
 
   // ─── SCRIPTING & VARIABLES ───────────────────────────────────────
 
