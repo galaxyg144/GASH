@@ -724,14 +724,14 @@
 
   G.register('edit', async function (args, ctx) {
     if (!args.length) return '> error: usage: edit <path>';
+    const mode = args[0] === '-c' ? (args.shift(), 'command') : 'visual';
     const filename = ctx.fs.normalizePath(args[0]);
-
     if (!G.editor) G.editor = new G.Editor();
-    const output = await G.editor.open(filename, ctx.fs);
+    const output = await G.editor.open(filename, ctx.fs, mode);
     G.editorMode = true;
     G._updatePrompt();
     return output;
-  }, 'Edit files with the built-in line editor', 'edit');
+  }, 'Edit files with the built-in line editor\n  edit <path>      Visual editor (default)\n  edit -c <path>    Command-based editor', 'edit');
 
   // ─── INITIALIZATION ─────────────────────────────────────────────
 

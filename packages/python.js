@@ -165,5 +165,90 @@
     return null;
   }, HELP, 'pkg');
 
+  // ─── PIP: Python package manager via micropid ──────────────────
+
+  var PIP_HELP = [
+    'pip - Python package manager for Pyodide',
+    '',
+    '  Usage:',
+    '    pip install <pkg>    Install a Python package from PyPI',
+    '    pip list              List installed packages',
+    '    pip freeze            List installed packages (pip format)',
+    '    pip uninstall <pkg>   Uninstall a package',
+    '    pip --help            Show this help',
+    '',
+    '  Examples:',
+    '    pip install requests',
+    '    pip list'
+  ].join('\n');
+
+  G.register('pip', async function (args, ctx) {
+    if (!args.length || args[0] === '--help') {
+      return '> ' + PIP_HELP.split('\n').join('\n> ');
+    }
+
+    try {
+      await ensurePyodide(ctx);
+    } catch (e) {
+      return '> error: ' + e.message;
+    }
+
+    var sub = args[0];
+
+    if (sub === 'install') {
+      var pkgName = args[1];
+      if (!pkgName) return '> error: usage: pip install <package>';
+      ctx.addToConsole('> Installing ' + pkgName + '...');
+      try {
+        await pyodide.runPythonAsync('import micropip; await micropip.install("' + pkgName.replace(/"/g, '') + '")');
+        return '> \u2705 Installed "' + pkgName + '"';
+      } catch (e) {
+        return '> error: ' + e.message;
+      }
+    }
+
+    if (sub === 'list' || sub === 'freeze') {
+      try {
+        var result = pyodide.runPython([
+          'import importlib.metadata',
+          'pkgs = []',
+          'for dist in importlib.metadata.distributions():',
+          '    name = dist.metadata.get("Name", dist.metadata["name"])',
+          '    ver = dist.version',
+          '    pkgs.append(name + "==" + ver)',
+          'pkgs.sort()',
+          'str(pkgs)'
+        ].join('\n'));
+        var list = JSON.parse(result.replace(/'/g, '"'));
+        if (!list.length) return '> (no packages installed)';
+        return '> ' + list.join('\n> ');
+      } catch (e) {
+        return '> error: ' + e.message;
+      }
+    }
+
+    if (sub === 'uninstall') {
+      var pkgName = args[1];
+      if (!pkgName) return '> error: usage: pip uninstall <package>';
+      try {
+        pyodide.runPython([
+          'import shutil, importlib, sys',
+          'try:',
+          '    dist = importlib.metadata.distribution("' + pkgName.replace(/"/g, '') + '")',
+          '    path = dist._path',
+          '    shutil.rmtree(path)',
+          '    sys.modules.pop("' + pkgName.replace(/"/g, '') + '", None)',
+          'except Exception as e:',
+          '    raise Exception("could not uninstall: " + str(e))'
+        ].join('\n'));
+        return '> \u2705 Uninstalled "' + pkgName + '"';
+      } catch (e) {
+        return '> error: ' + e.message;
+      }
+    }
+
+    return '> usage: pip <install|list|freeze|uninstall>';
+  }, PIP_HELP, 'pkg');
+
   G.addToConsole('> \ud83d\udc0d python package loaded. Try: python repl');
 })();

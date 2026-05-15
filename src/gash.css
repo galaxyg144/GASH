@@ -188,3 +188,83 @@ input:focus, button:focus, textarea:focus {
   background: #111;
   border-top: 1px solid #333;
 }
+
+/* ─── VISUAL EDITOR ───────────────────────────────────────────── */
+
+#editor-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  z-index: 1000;
+}
+
+#editor-header {
+  padding: 8px 12px;
+  background: #111;
+  border-bottom: 1px solid #333;
+  color: #0f0;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+#editor-status {
+  color: #666;
+  font-style: italic;
+}
+
+#editor-textarea {
+  flex: 1;
+  background: #000;
+  color: #0f0;
+  border: none;
+  outline: none;
+  resize: none;
+  padding: 12px;
+  font-family: 'Courier New', monospace;
+  font-size: 16px;
+  line-height: 1.5;
+  tab-size: 4;
+}
+
+#editor-textarea::selection {
+  background: #0f0;
+  color: #000;
+}
+
+#editor-footer {
+  padding: 6px 12px;
+  background: #111;
+  border-top: 1px solid #333;
+  color: #666;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+/* Theme overrides for editor */
+.theme-light #editor-overlay { background: #f0f0f0; }
+.theme-light #editor-header { background: #ddd; color: #060; }
+.theme-light #editor-textarea { background: #fff; color: #000; }
+.theme-light #editor-textarea::selection { background: #060; color: #fff; }
+.theme-light #editor-footer { background: #ddd; color: #666; }
+
+.theme-blue #editor-overlay { background: #1f1f1f; }
+.theme-blue #editor-header { background: #2a2a2a; color: #1e90ff; }
+.theme-blue #editor-textarea { color: #1e90ff; }
+.theme-blue #editor-textarea::selection { background: #1e90ff; color: #000; }
+
+.theme-red #editor-overlay { background: #1f1f1f; }
+.theme-red #editor-header { background: #2a2a2a; color: #ff4500; }
+.theme-red #editor-textarea { color: #ff4500; }
+.theme-red #editor-textarea::selection { background: #ff4500; color: #000; }
+
+.theme-purple #editor-overlay { background: #1f1f1f; }
+.theme-purple #editor-header { background: #2a2a2a; color: #800080; }
+.theme-purple #editor-textarea { color: #800080; }
+.theme-purple #editor-textarea::selection { background: #800080; color: #fff; }
+
+.theme-green #editor-overlay { background: #030; }
+.theme-green #editor-header { background: #040; color: #0f0; }
+.theme-green #editor-textarea { color: #0f0; }
+.theme-green #editor-textarea::selection { background: #0f0; color: #000; }
