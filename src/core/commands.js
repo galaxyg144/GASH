@@ -83,6 +83,7 @@
   pkg run <name> [args]     - Execute a package
   pkg list                  - List installed packages
   pkg remove <name>         - Remove a package
+  pkg create <name>         - Scaffold a new package from template
   pkg show <name>           - Show package source code
   pkg search <query>        - Search registry
   pkg info <name>           - Show package details from registry
@@ -113,6 +114,7 @@
   date                - Show current date
   clear               - Clear console
   help [cmd/cat]      - Show help
+  man <cmd>           - Show detailed command help
   about               - About GASH
   history             - Command history
   updlog              - Update log
@@ -123,13 +125,27 @@
   type <cmd>          - Show command type
   app run <name>      - Run an app from src/apps/
   localstr <op>       - Local storage operations
+  figlet <text>       - Generate ASCII art banner
+  weather [city]      - Show weather forecast
+  top                 - Show system information
+
+Job Control:
+  cmd &               - Run command in background
+  jobs                - List background jobs
+  ps                  - Alias for jobs
+  fg <jobid>          - Bring job to foreground
+  bg <jobid>          - Resume job in background
+  kill <jobid>        - Terminate a job
 
 System Commands:
   sudo <cmd>          - Run command as root (prompts for password)
   whoami              - Show current username
   id                  - Show user identity
   hostname [name]     - Show or set hostname
-  passwd              - Change account password`;
+  passwd              - Change account password
+  cron list|add|rm    - Scheduler (tasks stored in /var/spool/cron/)
+  serve [port]        - Start HTTP file server (via Service Worker)
+  pkg create <name>   - Scaffold a new package from template`;
 
   // ─── FILE SYSTEM COMMANDS ────────────────────────────────────────
 
@@ -877,6 +893,48 @@ System Commands:
       return `> package "${name}" not found`;
     }
 
+    // ── CREATE (scaffold) ───────────────────────────────────────
+
+    if (sub === 'create') {
+      const name = args[1];
+      if (!name) return '> error: usage: pkg create <name>';
+      if (ctx.gashPackages[name]) return `> package "${name}" already exists`;
+
+      const template = `(function () {
+  const G = GASH;
+
+  const HELP = \`${name} - A GASH package
+
+  Usage:
+    ${name} --help    Show this help\`;
+
+  G.register('${name}', async function (args, ctx) {
+    if (!args.length || args[0] === '--help') {
+      return '> ' + HELP.split('\\n').join('\\n> ');
+    }
+
+    // Your code here
+    return '> hello from ${name}!';
+  }, HELP, 'pkg');
+
+  G.addToConsole('> \\ud83d\\udce6 ${name} package loaded. Try: ${name} --help');
+})();`;
+
+      ctx.gashPackages[name] = { code: template, url: '', installed: Date.now() };
+      ctx._savePackages();
+      try {
+        await ctx.fs.mkdirp('/sys/bin');
+        await ctx.fs.writeFile('/sys/bin/' + name + '.js', template);
+      } catch (e) { /* VFS not available */ }
+      // Auto-register
+      try {
+        (new Function('GASH', 'ctx', 'args', 'console', 'document', 'window', template))(window.GASH, ctx, [], console, document, window);
+      } catch (e) {
+        return '> error executing template: ' + e.message;
+      }
+      return `> created package "${name}" (${template.length} chars). Try: ${name}`;
+    }
+
     // ── SHOW ─────────────────────────────────────────────────────
 
     if (sub === 'show') {
@@ -887,7 +945,7 @@ System Commands:
       return '> ' + pkg.code.split('\n').join('\n> ');
     }
 
-    return '> usage: pkg <install|run|list|remove|show|search|info>';
+    return '> usage: pkg <install|run|list|remove|show|search|info|create>';
   }, HELP_PKG, 'pkg');
 
   // ─── UTILITIES ───────────────────────────────────────────────────
@@ -1078,6 +1136,136 @@ System Commands:
     return '> password updated';
   }, 'Change account password', 'sys');
 
+  // ─── SSH: WebSocket SSH proxy client ────────────────────────────
+
+  G.register('ssh', async function (args, ctx) {
+    if (!args.length) return '> usage: ssh <host> | --proxy <url> | --show-proxy';
+
+    if (args[0] === '--proxy') {
+      if (!args[1]) return '> error: --proxy requires a URL';
+      ctx.vars._sshProxy = args[1];
+      return '> SSH proxy set to ' + args[1];
+    }
+
+    if (args[0] === '--show-proxy') {
+      return '> SSH proxy: ' + (ctx.vars._sshProxy || '(not set)');
+    }
+
+    if (G.inputHook) return '> already in a session (type exit to disconnect)';
+
+    var host = args[0];
+    var proxy = ctx.vars._sshProxy;
+    if (!proxy) return '> error: no SSH proxy set. Use: ssh --proxy <wss://url>';
+
+    ctx.addToConsole('> Connecting to ' + host + ' via ' + proxy + '...');
+
+    var ws;
+    try {
+      ws = new WebSocket(proxy + '/' + host);
+    } catch (e) {
+      return '> error: ' + e.message;
+    }
+
+    var connected = false;
+    var savedUpdatePrompt = G._updatePrompt;
+
+    function cleanup() {
+      if (G.inputHook) {
+        G.inputHook = null;
+        G._updatePrompt = savedUpdatePrompt;
+        G._updatePrompt();
+      }
+    }
+
+    ws.addEventListener('open', function () {
+      connected = true;
+      ctx.addToConsole('> Connected to ' + host);
+      ctx.addToConsole('> Type exit to disconnect.');
+
+      G.inputHook = function (line) {
+        if (line === 'exit' || line === 'quit') {
+          ws.close();
+          return;
+        }
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(line + '\n');
+        }
+      };
+
+      G._updatePrompt = function () {
+        if (G.inputHook) {
+          document.getElementById('prompt-label').textContent = 'ssh> ';
+        } else {
+          savedUpdatePrompt.call(G);
+        }
+        var inp = document.getElementById('input-field');
+        if (inp && document.activeElement !== inp) inp.focus();
+      };
+      G._updatePrompt();
+    });
+
+    ws.addEventListener('message', function (e) {
+      ctx.addToConsole('> ' + e.data.replace(/\n$/, '').split('\n').join('\n> '));
+    });
+
+    ws.addEventListener('close', function () {
+      cleanup();
+      ctx.addToConsole('> Disconnected from ' + host);
+    });
+
+    ws.addEventListener('error', function () {
+      if (!connected) {
+        ctx.addToConsole('> Connection failed to ' + host, 'error-output');
+      } else {
+        cleanup();
+      }
+    });
+
+    return null;
+  }, 'SSH client via WebSocket proxy\n  ssh <host>           Connect to host via SSH proxy\n  ssh --proxy <url>    Set WebSocket proxy URL\n  ssh --show-proxy     Show current proxy URL', 'sys');
+
+  // ─── JOB CONTROL ──────────────────────────────────────────────────
+
+  G.register(['jobs', 'ps'], async function (args, ctx) {
+    var ids = Object.keys(G.jobs);
+    if (!ids.length) return '> no running jobs';
+    var lines = ids.map(function (id) {
+      var j = G.jobs[id];
+      var elapsed = Math.round((Date.now() - j.timestamp) / 1000) + 's';
+      return '[' + id + '] ' + j.status + '  ' + elapsed + '  ' + j.command;
+    });
+    return '> ' + lines.join('\n> ');
+  }, 'List background jobs', 'sys');
+
+  G.register('fg', async function (args, ctx) {
+    if (!args.length) return '> error: usage: fg <jobid>';
+    var id = parseInt(args[0]);
+    var job = G.jobs[id];
+    if (!job) return '> error: job ' + id + ' not found';
+    if (job.status !== 'running' && job.status !== 'suspended') return '> error: job ' + id + ' is ' + job.status;
+    ctx.addToConsole('> waiting for job [' + id + ']...');
+    try { await job.promise; } catch (e) { /* ignore */ }
+    return null;
+  }, 'Bring job to foreground\n  fg <jobid>    Wait for a background job to complete', 'sys');
+
+  G.register('bg', async function (args, ctx) {
+    if (!args.length) return '> error: usage: bg <jobid>';
+    var id = parseInt(args[0]);
+    var job = G.jobs[id];
+    if (!job) return '> error: job ' + id + ' not found';
+    job.status = 'running';
+    return '> job [' + id + '] resumed in background';
+  }, 'Resume job in background\n  bg <jobid>', 'sys');
+
+  G.register('kill', async function (args, ctx) {
+    if (!args.length) return '> error: usage: kill <jobid>';
+    var id = parseInt(args[0]);
+    var job = G.jobs[id];
+    if (!job) return '> error: job ' + id + ' not found';
+    delete G.jobs[id];
+    return '> job [' + id + '] terminated';
+  }, 'Terminate a job\n  kill <jobid>', 'sys');
+
   G.register('which', async function (args, ctx) {
     if (!args.length) return '> error: usage: which <command>';
     const cmd = args[0];
@@ -1159,6 +1347,188 @@ System Commands:
 
     return '> usage: localstr <set|get|list|del|wipe>';
   }, HELP_UTIL, 'util');
+
+  // ─── FIGLET ──────────────────────────────────────────────────────
+
+  G.register('figlet', async function (args) {
+    if (!args.length) return '> error: usage: figlet <text>';
+    var text = args.join(' ');
+    var chars = text.toUpperCase().split('');
+    var lines = ['', '', '', '', ''];
+    var font = {
+      'A': [' AA ', 'A  A', 'AAAA', 'A  A', 'A  A'],
+      'B': ['BBB ', 'B  B', 'BBB ', 'B  B', 'BBB '],
+      'C': [' CCC', 'C   ', 'C   ', 'C   ', ' CCC'],
+      'D': ['DDD ', 'D  D', 'D  D', 'D  D', 'DDD '],
+      'E': ['EEEE', 'E   ', 'EEE ', 'E   ', 'EEEE'],
+      'F': ['FFFF', 'F   ', 'FFF ', 'F   ', 'F   '],
+      'G': [' GGG', 'G   ', 'G GG', 'G  G', ' GGG'],
+      'H': ['H  H', 'H  H', 'HHHH', 'H  H', 'H  H'],
+      'I': ['III', ' I ', ' I ', ' I ', 'III'],
+      'J': ['  JJ', '   J', '   J', 'J  J', ' JJ '],
+      'K': ['K  K', 'K K ', 'KK  ', 'K K ', 'K  K'],
+      'L': ['L   ', 'L   ', 'L   ', 'L   ', 'LLLL'],
+      'M': ['M   M', 'MM MM', 'M M M', 'M   M', 'M   M'],
+      'N': ['N  N', 'NN N', 'N NN', 'N  N', 'N  N'],
+      'O': [' OO ', 'O  O', 'O  O', 'O  O', ' OO '],
+      'P': ['PPP ', 'P  P', 'PPP ', 'P   ', 'P   '],
+      'Q': [' QQ ', 'Q  Q', 'Q  Q', 'Q QQ', ' QQ '],
+      'R': ['RRR ', 'R  R', 'RRR ', 'R R ', 'R  R'],
+      'S': [' SSS', 'S   ', ' SS ', '   S', 'SSS '],
+      'T': ['TTTT', '  T ', '  T ', '  T ', '  T '],
+      'U': ['U  U', 'U  U', 'U  U', 'U  U', ' UU '],
+      'V': ['V  V', 'V  V', 'V  V', ' VV ', '  V '],
+      'W': ['W   W', 'W   W', 'W W W', 'W W W', ' W W '],
+      'X': ['X  X', ' X X', '  X ', ' X X', 'X  X'],
+      'Y': ['Y  Y', 'Y  Y', ' YY ', '  Y ', '  Y '],
+      'Z': ['ZZZZ', '   Z', '  Z ', ' Z  ', 'ZZZZ'],
+      ' ': ['    ', '    ', '    ', '    ', '    '],
+      '!': ['!', '!', '!', ' ', '!'],
+      '?': ['???', '  ?', ' ? ', '   ', ' ? '],
+      '0': ['000', '0 0', '0 0', '0 0', '000'],
+      '1': [' 1 ', ' 11', ' 1 ', ' 1 ', '111'],
+      '2': ['222', '  2', '222', '2  ', '222'],
+      '3': ['333', '  3', '333', '  3', '333'],
+      '4': ['4 4', '4 4', '444', '  4', '  4'],
+      '5': ['555', '5  ', '555', '  5', '555'],
+      '6': ['666', '6  ', '666', '6 6', '666'],
+      '7': ['777', '  7', '  7', ' 7 ', '7  '],
+      '8': ['888', '8 8', '888', '8 8', '888'],
+      '9': ['999', '9 9', '999', '  9', '999']
+    };
+    for (var row = 0; row < 5; row++) {
+      for (var ci = 0; ci < chars.length; ci++) {
+        var f = font[chars[ci]];
+        lines[row] += f ? f[row] : ' ?? ';
+        if (ci < chars.length - 1) lines[row] += ' ';
+      }
+    }
+    return '> ' + lines.join('\n> ');
+  }, 'Generate ASCII art banner\n  figlet <text>', 'util');
+
+  // ─── WEATHER ────────────────────────────────────────────────────
+
+  G.register('weather', async function (args) {
+    var city = args.join(' ') || '';
+    var url = city ? 'https://wttr.in/' + encodeURIComponent(city) + '?format=4' : 'https://wttr.in?format=4';
+    try {
+      var res = await fetch(url);
+      if (!res.ok) return '> error: HTTP ' + res.status;
+      var text = await res.text();
+      return '> ' + text.trim();
+    } catch (e) {
+      return '> error: ' + e.message;
+    }
+  }, 'Show weather forecast\n  weather [city]', 'util');
+
+  // ─── TOP ──────────────────────────────────────────────────────────
+
+  G.register('top', async function (args, ctx) {
+    var jobsCount = Object.keys(G.jobs || {}).length;
+    var fsCount = 0;
+    try { var all = await ctx.fs._getAll(); fsCount = all.length; } catch (e) { /* ignore */ }
+    var now = new Date();
+    var uptime = Math.round((Date.now() - performance.timing.navigationStart) / 1000) + 's';
+    var mem = navigator.deviceMemory ? navigator.deviceMemory + 'GB' : 'N/A';
+    var conn = navigator.connection ? navigator.connection.effectiveType : 'N/A';
+    return '> ' + [
+      'GASH v' + G.version + '  |  uptime: ' + uptime,
+      'user: ' + (ctx.vars.USER || 'gashuser') + '  |  hostname: ' + (G.hostname || 'gashbox'),
+      'CWD: ' + ctx.fs.cwd,
+      'VFS files: ' + fsCount + '  |  jobs: ' + jobsCount,
+      'RAM: ' + mem + '  |  connection: ' + conn,
+      'history: ' + ctx.history.length + ' entries'
+    ].join('\n> ');
+  }, 'Show system information\n  top', 'util');
+
+  // ─── MAN ──────────────────────────────────────────────────────────
+
+  G.register('man', async function (args) {
+    if (!args.length) return '> error: usage: man <command>';
+    var topic = args[0].toLowerCase();
+    var cmd = G.commands[topic];
+    if (!cmd) return '> no manual entry for ' + topic;
+    var help = cmd.help || 'No help available.';
+    var category = cmd.category || 'unknown';
+    return '> ' + [
+      '',
+      topic + '(' + category + ')',
+      '',
+      help
+    ].join('\n> ');
+  }, 'Show detailed command help\n  man <command>', 'util');
+
+  // ─── CRON ─────────────────────────────────────────────────────────
+
+  G.register('cron', async function (args, ctx) {
+    if (!args.length) return '> usage: cron <list|add|rm> [args]';
+    var sub = args[0];
+
+    if (sub === 'list') {
+      try {
+        var entries = await ctx.fs.readdir('/var/spool/cron');
+        if (!entries.length) return '> no cron jobs';
+        var out = [];
+        for (var ei = 0; ei < entries.length; ei++) {
+          var e = entries[ei];
+          if (e.type === 'file') {
+            var content = await ctx.fs.readFile('/var/spool/cron/' + e.name);
+            out.push(e.name + ': ' + content);
+          }
+        }
+        return '> ' + out.join('\n> ');
+      } catch (e) { return '> no cron jobs'; }
+    }
+
+    if (sub === 'add') {
+      if (args.length < 3) return '> error: usage: cron add <interval_sec> <command>';
+      var interval = parseInt(args[1]);
+      if (isNaN(interval) || interval < 1) return '> error: interval must be a positive number';
+      var cmdStr = args.slice(2).join(' ');
+      var name = 'cron_' + Date.now();
+      try {
+        await ctx.fs.mkdirp('/var/spool/cron');
+        await ctx.fs.writeFile('/var/spool/cron/' + name, interval + ' ' + cmdStr);
+        return '> installed cron job: ' + name + ' (every ' + interval + 's)';
+      } catch (e) { return '> error: ' + e.message; }
+    }
+
+    if (sub === 'rm' || sub === 'remove') {
+      if (!args[1]) return '> error: usage: cron rm <jobname>';
+      var path = '/var/spool/cron/' + args[1];
+      try {
+        if (await ctx.fs.exists(path)) {
+          await ctx.fs.delete(path);
+          return '> removed cron job: ' + args[1];
+        }
+        return '> cron job not found: ' + args[1];
+      } catch (e) { return '> error: ' + e.message; }
+    }
+
+    return '> usage: cron <list|add|rm>';
+  }, 'Scheduler (tasks stored in /var/spool/cron/)\n  cron add <sec> <cmd>    Add a recurring command\n  cron list               List cron jobs\n  cron rm <name>          Remove a cron job', 'sys');
+
+  // ─── SERVE (HTTP via Service Worker) ──────────────────────────
+
+  G.register('serve', async function (args, ctx) {
+    var port = args[0] || '8080';
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+      ctx.addToConsole('> Service Worker active. Serving VFS on port ' + port + '...');
+      ctx.addToConsole('> (open DevTools > Application > Service Workers to see status)');
+      return null;
+    } else if ('serviceWorker' in navigator) {
+      ctx.addToConsole('> Registering Service Worker for HTTP serving...');
+      try {
+        var reg = await navigator.serviceWorker.register('/sw.js');
+        ctx.addToConsole('> SW registered. VFS files should be served at origin.');
+        ctx.addToConsole('> Note: requires sw.js in the root directory.');
+      } catch (e) {
+        return '> error: ' + e.message;
+      }
+      return null;
+    }
+    return '> Service Workers not supported in this browser.';
+  }, 'Start HTTP file server (via Service Worker)\n  serve [port]', 'sys');
 
   // Easter eggs
   G.register('game', async function () {

@@ -25,6 +25,8 @@
   G.filteredHistory = [];
   G.historySearchMode = false;
   G.historySearchQuery = '';
+  G.jobs = {};
+  G.nextJobId = 1;
 
   // ─── DOM REFS ───────────────────────────────────────────────────
 
@@ -37,13 +39,13 @@
   G.addToConsole = function (text, cls) {
     if (text == null || text === '') return;
     const clsAttr = cls ? ` class="${cls}"` : '';
-    consoleOutput.innerHTML += `<div${clsAttr}><span class="prompt-gash">GASH $ </span>${text}</div>`;
+    consoleOutput.innerHTML += `<div${clsAttr}><span class="prompt-gash">&gt; </span>${text}</div>`;
     consoleOutput.scrollTop = consoleOutput.scrollHeight;
   };
 
   G._clearConsole = function () {
     const welcome = `Welcome to GASH - Galaxy's Developer Shell v${G.version}\nType your commands below...\nType 'help' for available commands.`;
-    consoleOutput.innerHTML = `<div><span class="prompt-gash">GASH $ </span>${welcome.replace(/\n/g, '<br>')}</div>`;
+    consoleOutput.innerHTML = `<div><span class="prompt-gash">&gt; </span>${welcome.replace(/\n/g, '<br>')}</div>`;
   };
 
   G._updatePrompt = function () {
@@ -262,17 +264,32 @@
         inSingle = true;
       } else if (c === '"') {
         inDouble = true;
-      } else if (c === '|' || c === '>') {
+      } else if (c === '|' || c === '>' || c === ';' || c === '&') {
         if (current.trim()) {
           tokens.push({ type: 'text', value: current.trim() });
         }
-        if (c === '|') tokens.push({ type: 'pipe', value: '|' });
-        else if (c === '>') {
+        if (c === '|') {
+          if (i + 1 < input.length && input[i + 1] === '|') {
+            tokens.push({ type: 'or', value: '||' });
+            i++;
+          } else {
+            tokens.push({ type: 'pipe', value: '|' });
+          }
+        } else if (c === '>') {
           if (i + 1 < input.length && input[i + 1] === '>') {
             tokens.push({ type: 'redirect', value: '>>' });
             i++;
           } else {
             tokens.push({ type: 'redirect', value: '>' });
+          }
+        } else if (c === ';') {
+          tokens.push({ type: 'semicolon', value: ';' });
+        } else if (c === '&') {
+          if (i + 1 < input.length && input[i + 1] === '&') {
+            tokens.push({ type: 'and', value: '&&' });
+            i++;
+          } else {
+            tokens.push({ type: 'background', value: '&' });
           }
         }
         current = '';
@@ -294,38 +311,139 @@
     return tokens;
   }
 
-  // ─── COMMAND PARSING ────────────────────────────────────────────
+  // ─── COMMAND PARSING (groups & connectors) ────────────────────
 
   function parsePipeline(input) {
-    const expanded = G.expandVars(input);
-    const tokens = tokenize(expanded);
+    var expanded = G.expandVars(input);
+    var tokens = tokenize(expanded);
 
-    const segments = [{ cmdTokens: [], redirects: [] }];
-    let currentSeg = segments[0];
+    var groups = [];
+    var connectors = [];
+    var curPipe = [];
+    var curSeg = { args: [], redirects: [] };
 
-    for (const token of tokens) {
-      if (token.type === 'pipe') {
-        currentSeg = { cmdTokens: [], redirects: [] };
-        segments.push(currentSeg);
-      } else if (token.type === 'redirect') {
-        currentSeg.redirects.push({ op: token.value, target: null });
-      } else if (token.type === 'text') {
-        const redirects = currentSeg.redirects;
-        if (redirects.length > 0 && redirects[redirects.length - 1].target === null) {
-          redirects[redirects.length - 1].target = token.value;
-        } else {
-          currentSeg.cmdTokens.push(token.value);
-        }
+    function flushSeg() {
+      if (curSeg.args.length || curSeg.redirects.length) {
+        curPipe.push({ args: curSeg.args, redirects: curSeg.redirects });
+        curSeg = { args: [], redirects: [] };
       }
     }
 
-    return segments.map(seg => ({
-      args: seg.cmdTokens,
-      redirects: seg.redirects
-    }));
+    function flushGroup() {
+      flushSeg();
+      if (curPipe.length) {
+        groups.push(curPipe);
+        curPipe = [];
+      }
+    }
+
+    for (var ti = 0; ti < tokens.length; ti++) {
+      var t = tokens[ti];
+      if (t.type === 'text') {
+        var redirs = curSeg.redirects;
+        if (redirs.length && redirs[redirs.length - 1].target === null) {
+          redirs[redirs.length - 1].target = t.value;
+        } else {
+          curSeg.args.push(t.value);
+        }
+      } else if (t.type === 'pipe') {
+        flushSeg();
+      } else if (t.type === 'redirect') {
+        curSeg.redirects.push({ op: t.value, target: null });
+      } else if (t.type === 'semicolon') {
+        flushGroup();
+        connectors.push(';');
+      } else if (t.type === 'and') {
+        flushGroup();
+        connectors.push('&&');
+      } else if (t.type === 'or') {
+        flushGroup();
+        connectors.push('||');
+      } else if (t.type === 'background') {
+        flushSeg();
+        if (curPipe.length) {
+          curPipe[curPipe.length - 1].background = true;
+        }
+        flushGroup();
+        connectors.push('&');
+      }
+    }
+
+    flushGroup();
+
+    return { groups: groups, connectors: connectors };
   }
 
   // ─── COMMAND DISPATCH ───────────────────────────────────────────
+
+  function makeCtx(pipeInput) {
+    return {
+      fs: G.fs, vars: G.vars, aliases: G.aliases, config: G.config,
+      history: G.history, socket: G.socket, gashFunctions: G.gashFunctions,
+      gashPackages: G.gashPackages, waitingForFunction: G.waitingForFunction,
+      pipeInput: pipeInput, addToConsole: G.addToConsole,
+      processCommand: G.processCommand,
+      _saveFunctions: G._saveFunctions, _savePackages: G._savePackages,
+      _saveAliases: G._saveAliases, _saveConfig: G._saveConfig,
+      _clearConsole: G._clearConsole, _updatePrompt: G._updatePrompt
+    };
+  }
+
+  async function execPipeline(pipeline, initialInput) {
+    var pipeOutput = initialInput;
+    for (var si = 0; si < pipeline.length; si++) {
+      var seg = pipeline[si];
+      var args = seg.args;
+      var redirects = seg.redirects;
+      if (!args.length) { pipeOutput = pipeOutput || ''; continue; }
+
+      var cmdName = args[0].toLowerCase();
+      if (G.aliases[cmdName]) {
+        var aliasCmd = G.aliases[cmdName];
+        cmdName = aliasCmd.split(/\s+/)[0].toLowerCase();
+        args.splice(0, 1, ...aliasCmd.split(/\s+/).slice(1));
+      }
+
+      var cmdEntry = G.commands[cmdName];
+      if (!cmdEntry) {
+        pipeOutput = 'error: unknown command: ' + cmdName;
+        continue;
+      }
+
+      var ctx = makeCtx(pipeOutput);
+      var output;
+      try {
+        output = await cmdEntry.handler(args.slice(1), ctx);
+        G.socket = ctx.socket;
+        G.waitingForFunction = ctx.waitingForFunction;
+      } catch (err) {
+        output = 'error: ' + err.message;
+      }
+
+      pipeOutput = output !== null
+        ? (typeof output === 'string' ? output.replace(/^> ?/gm, '').trim() : '')
+        : null;
+
+      for (var ri = 0; ri < redirects.length; ri++) {
+        var redir = redirects[ri];
+        if (redir.target && pipeOutput != null) {
+          try {
+            var p = G.fs.normalizePath(redir.target);
+            if (redir.op === '>') await G.fs.writeFile(p, pipeOutput);
+            else if (redir.op === '>>') {
+              var exist = '';
+              try { exist = await G.fs.readFile(p); } catch (e) {}
+              await G.fs.writeFile(p, exist + pipeOutput);
+            }
+            pipeOutput = null;
+          } catch (e) {
+            G.addToConsole('> redirect error: ' + e.message, 'error-output');
+          }
+        }
+      }
+    }
+    return pipeOutput;
+  }
 
   G.processCommand = async function (input) {
     if (!input || !input.trim()) return;
@@ -334,141 +452,103 @@
     G.historyIndex = G.history.length;
     G._saveHistory();
 
-    const pipeSegments = parsePipeline(input);
+    var parsed = parsePipeline(input);
+    var groups = parsed.groups;
+    var connectors = parsed.connectors;
 
-    let pipeOutput = null;
+    var lastError = false;
 
-    for (let si = 0; si < pipeSegments.length; si++) {
-      const seg = pipeSegments[si];
-      const args = seg.args;
-      const redirects = seg.redirects;
+    for (var gi = 0; gi < groups.length; gi++) {
+      var pipeline = groups[gi];
 
-      if (!args.length) {
-        pipeOutput = pipeOutput || '';
-        continue;
+      // Check connector from previous group
+      if (gi > 0) {
+        var prevConn = connectors[gi - 1];
+        if (prevConn === '&&' && lastError) continue;
+        if (prevConn === '||' && !lastError) continue;
       }
 
-      let cmdName = args[0].toLowerCase();
+      var isBg = pipeline.some(function (s) { return s.background; });
+      var connector = gi < connectors.length ? connectors[gi] : null;
 
-      if (G.aliases[cmdName]) {
-        const aliasCmd = G.aliases[cmdName];
-        const aliasParts = aliasCmd.split(/\s+/);
-        cmdName = aliasParts[0].toLowerCase();
-        args.splice(0, 1, ...aliasParts.slice(1));
-      }
-
-      const cmdEntry = G.commands[cmdName];
-
-      if (!cmdEntry) {
-        pipeOutput = `error: unknown command: ${cmdName}`;
-        if (pipeSegments.length === 1) {
-          G.addToConsole(`> ${pipeOutput}`, 'error-output');
-        }
-        return;
-      }
-
-      const cmdArgs = args.slice(1);
-
-      const ctx = {
-        fs: G.fs,
-        vars: G.vars,
-        aliases: G.aliases,
-        config: G.config,
-        history: G.history,
-        socket: G.socket,
-        gashFunctions: G.gashFunctions,
-        gashPackages: G.gashPackages,
-        waitingForFunction: G.waitingForFunction,
-        pipeInput: pipeOutput,
-        addToConsole: G.addToConsole,
-        processCommand: G.processCommand,
-        _saveFunctions: G._saveFunctions,
-        _savePackages: G._savePackages,
-        _saveAliases: G._saveAliases,
-        _saveConfig: G._saveConfig,
-        _clearConsole: G._clearConsole,
-        _updatePrompt: G._updatePrompt
-      };
-
-      let output;
-      try {
-        output = await cmdEntry.handler(cmdArgs, ctx);
-        G.socket = ctx.socket;
-        G.waitingForFunction = ctx.waitingForFunction;
-      } catch (err) {
-        output = `error: ${err.message}`;
-      }
-
-      if (output !== null) {
-        pipeOutput = typeof output === 'string' ? output.replace(/^> ?/gm, '').trim() : '';
+      if (isBg) {
+        // Background: don't await, track as job
+        var jobId = G.nextJobId++;
+        var cmdText = pipeline.map(function (s) { return s.args.join(' '); }).join(' | ');
+        var job = { id: jobId, command: cmdText, status: 'running', timestamp: Date.now() };
+        G.jobs[jobId] = job;
+        job.promise = execPipeline(pipeline, null).then(function (out) {
+          job.status = 'done';
+          if (out != null) G.addToConsole('[job ' + jobId + '] ' + out);
+          return out;
+        }).catch(function (err) {
+          job.status = 'failed';
+          G.addToConsole('[job ' + jobId + '] error: ' + err.message, 'error-output');
+        });
+        lastError = false;
+        if (connector === '&') continue;
       } else {
-        pipeOutput = null;
-      }
+        var result = await execPipeline(pipeline, null);
+        lastError = result && result.startsWith('error:');
 
-      // Handle redirects
-      for (const redir of redirects) {
-        if (redir.target && pipeOutput != null) {
-          try {
-            const path = G.fs.normalizePath(redir.target);
-            if (redir.op === '>') {
-              await G.fs.writeFile(path, pipeOutput);
-            } else if (redir.op === '>>') {
-              let existing = '';
-              try { existing = await G.fs.readFile(path); }
-              catch (e) { /* file doesn't exist */ }
-              await G.fs.writeFile(path, existing + pipeOutput);
-            }
-            pipeOutput = null;
-          } catch (e) {
-            G.addToConsole(`> redirect error: ${e.message}`, 'error-output');
-          }
+        // Show output only if this is the last group or it's standalone
+        if (gi === groups.length - 1 && result != null) {
+          var cls = lastError ? 'error-output' : '';
+          G.addToConsole('> ' + result, cls);
+        } else if (groups.length === 1 && result != null && connector !== '|') {
+          var cls2 = lastError ? 'error-output' : '';
+          G.addToConsole('> ' + result, cls2);
         }
-      }
 
-      // Display output if last in pipeline and no redirect consumed it
-      if (si === pipeSegments.length - 1 && pipeOutput != null) {
-        const cls = pipeOutput.startsWith('error:') ? 'error-output' : '';
-        G.addToConsole(`> ${pipeOutput}`, cls);
+        if (connector === '&') continue;
       }
     }
   };
 
   // Synchronous version for command substitution
   G.processCommandSync = function (input) {
-    const segments = parsePipeline(input);
-    let pipeOutput = null;
+    var parsed = parsePipeline(input);
+    var groups = parsed.groups;
+    var connectors = parsed.connectors;
+    var pipeOutput = null;
+    var lastError = false;
 
-    for (const seg of segments) {
-      const args = seg.args;
-      if (!args.length) continue;
-
-      let cmdName = args[0].toLowerCase();
-      if (G.aliases[cmdName]) {
-        const aliasCmd = G.aliases[cmdName];
-        cmdName = aliasCmd.split(/\s+/)[0].toLowerCase();
+    for (var gi = 0; gi < groups.length; gi++) {
+      var pipeline = groups[gi];
+      if (gi > 0) {
+        var prevConn = connectors[gi - 1];
+        if (prevConn === '&&' && lastError) continue;
+        if (prevConn === '||' && !lastError) continue;
       }
+      if (pipeline.some(function (s) { return s.background; })) continue;
 
-      const cmdEntry = G.commands[cmdName];
-      if (!cmdEntry) {
-        pipeOutput = `error: unknown command: ${cmdName}`;
-        continue;
-      }
+      for (var si = 0; si < pipeline.length; si++) {
+        var seg = pipeline[si];
+        var args = seg.args;
+        if (!args.length) continue;
 
-      const cmdArgs = args.slice(1);
-      const ctx = {
-        fs: G.fs, vars: G.vars, aliases: G.aliases, config: G.config,
-        history: G.history, socket: G.socket, gashFunctions: G.gashFunctions,
-        pipeInput: pipeOutput, addToConsole: G.addToConsole,
-        processCommand: G.processCommandSync
-      };
+        var cmdName = args[0].toLowerCase();
+        if (G.aliases[cmdName]) {
+          cmdName = G.aliases[cmdName].split(/\s+/)[0].toLowerCase();
+        }
 
-      const result = cmdEntry.handler(cmdArgs, ctx);
-      if (result && typeof result.then === 'function') {
-        pipeOutput = '';
-      } else if (result !== null) {
-        pipeOutput = typeof result === 'string' ? result.replace(/^> ?/gm, '').trim() : '';
-      } else {
-        pipeOutput = null;
+        var cmdEntry = G.commands[cmdName];
+        if (!cmdEntry) { pipeOutput = 'error: unknown command: ' + cmdName; lastError = true; continue; }
+
+        var ctx = {
+          fs: G.fs, vars: G.vars, aliases: G.aliases, config: G.config,
+          history: G.history, socket: G.socket, gashFunctions: G.gashFunctions,
+          pipeInput: pipeOutput, addToConsole: G.addToConsole,
+          processCommand: G.processCommandSync
+        };
+
+        var result = cmdEntry.handler(args.slice(1), ctx);
+        if (result && typeof result.then === 'function') {
+          pipeOutput = '';
+        } else if (result !== null) {
+          pipeOutput = typeof result === 'string' ? result.replace(/^> ?/gm, '').trim() : '';
+        } else { pipeOutput = null; }
+        lastError = pipeOutput && pipeOutput.startsWith('error:');
       }
     }
 
@@ -803,9 +883,40 @@
     G.addToConsole('> Type "help" to get started.');
   };
 
+  // ─── CRON SCHEDULER ──────────────────────────────────────────────
+
+  G._cronTimers = {};
+
+  G._startCron = function () {
+    if (G._cronInterval) return;
+    G._cronInterval = setInterval(async function () {
+      if (!G.fs || !G.fs.ready) return;
+      try {
+        var entries = await G.fs.readdir('/var/spool/cron');
+        for (var ci = 0; ci < entries.length; ci++) {
+          var e = entries[ci];
+          if (e.type !== 'file') continue;
+          var content = await G.fs.readFile('/var/spool/cron/' + e.name);
+          var parts = content.split(' ');
+          var interval = parseInt(parts[0]);
+          if (isNaN(interval) || interval < 1) continue;
+          var cmd = parts.slice(1).join(' ');
+          var lastRun = G._cronTimers[e.name] || 0;
+          var now = Date.now();
+          if (now - lastRun >= interval * 1000) {
+            G._cronTimers[e.name] = now;
+            G.processCommand(cmd);
+          }
+        }
+      } catch (e) { /* /var/spool/cron may not exist */ }
+    }, 5000);
+  };
+
   // ─── START ──────────────────────────────────────────────────────
 
-  G.init().catch(err => {
+  G.init().then(function () {
+    G._startCron();
+  }).catch(err => {
     console.error('GASH init error:', err);
   });
 })();
